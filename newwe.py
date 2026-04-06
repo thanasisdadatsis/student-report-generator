@@ -18,7 +18,7 @@ class ExcelReportBuilder:
     
     
     def use_data(self) -> None:
-        """This function uses the data provided from __init__ and form a readable excel sheet """
+        """This function uses the data provided from __init__ and forms a readable excel sheet """
         counter: int = 0
         self.sheet.append(["Name", "Dates", "Term 1", "Term 2", "Term 3", "Exams", "Grade-if-retaken"])
         #Loop over each row and append the information in a proper way
@@ -27,7 +27,7 @@ class ExcelReportBuilder:
                 continue
             try:
                 self.sheet.append([row[0], datetime.strptime(row[1], '%Y-%m-%d'), *row[2:]])
-                #keep a counter for sucessful appends
+                #keep a counter for successful appends
                 counter += 1 
             except Exception as e:
                 print(f"Found exception at row {row}: \n{e}")
