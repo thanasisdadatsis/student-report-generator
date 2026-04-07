@@ -33,7 +33,7 @@ How to use it with your own data:
 Replace the list_of_students list with your own data. Each row should follow this format:
 [Name', 'YYYY-MM-DD', grade1, grade2, grade3, ...]
 You can also customize the sheet names and output filename:
-pythonreport = ExcelReportBuilder(
+report = ExcelReportBuilder(
     worksheet="Raw Data",
     second_name="Summary",
     error_worksheet="Errors",
