@@ -1,185 +1,148 @@
 from openpyxl import Workbook
 from datetime import datetime
-from typing import Self
+import logging
 
+logger = logging.getLogger(__name__)
+
+#--- Custom exceptions ---
+
+class InvalidRowError(Exception):
+    """Triggered when a row of data could not be converted into the right format"""
+
+class MissingDataError(Exception): 
+    """Triggered when the necessary data set was not available before processing"""
+
+# --- Private Helper/ Data Parsing ---
+
+def _parse_row(row: list) -> dict | None: 
+    """
+    Parses a raw data into a structured dict
+    
+    Expected format: [name: str, date: 'YYYY-MM-DD', grade1, grade2, ...]
+    
+    Raises: InvalidRowError: if the row is distorted or contains bad values
+    """
+    if not len(row) or len(row) < 3: 
+        raise InvalidRowError(f"Row too short to contain name, data and at least one grade: {row!r}")
+    
+    try: 
+        name = row[0]
+        date = datetime.strptime(row[1], '%Y-%m-%d').date()
+        grades = [g for g in row[2:] if isinstance(g, (int, float))]
+    except ValueError as e: 
+        raise InvalidRowError(f"Bad date format in row {row!r}")
+
+    if not grades: 
+        raise InvalidRowError(f"No numeric grades found in row {row!r}")
+
+    return {"name": name, "date": date, "grades": grades}
+
+# --- Main Class / Builder ---
 
 class ExcelReportBuilder: 
-    def __init__(self, pass_threshold: int = 70) -> None:
-        """Initialize objects we will both use and potentially not use later on"""
-        self.__workbook = Workbook()
-        
-        self.__main_sheet = None
-        self.__summary_sheet = None
-        self.__error_sheet = None
-        
-        
-        self.__data = None           
-        self.__error_log = []   
-        self.__headers = None  
+    """
+    Builds a multi-sheet Excel workbook from a list of student records.
 
-        self.__pass_threshold = pass_threshold #For creating summary report later
-        
-        #Remove active sheet for cleaner way of adding the main report later
-        default_sheet = self.__workbook.active
-        self.__workbook.remove(default_sheet)
+    Usage::
+
+        wb = ExcelReportBuilder()
+        wb.add_workbook(students, headers=["Name", "Date", "grade1", "grade2"])
+        wb.create_summary(fail_under=70, file="report.xlsx")
+    """   
+    def __init__(self) -> None: 
+        self._workbook = Workbook()
+        #Remove current active sheet so sheets will be added in our terms
+        self._workbook.remove(self._workbook.active)
+        self._parsed_records = []
     
-    def add_data(self, data:list, headers: list | None = None) -> Self: 
-        """Store row data and optional headers for later processing."""
-        self.__data = data #General data such as names, dates, grades, etc...
-        self.__headers = headers # The headers, which include [Names, Dates, Grade 1, ...]
-        return self #Returns the instance itself to allow for method chaining and thus cleaner and more flexible code
-        
+    # ----- Public API -----
 
-    def _parse_row(self, row: list[str | int | float]) -> dict | None:
-        """Helper function to initialize names, dates and grades, and combat errors cleanly"""
-        try:
-            name: str = row[0]
-            date = datetime.strptime(row[1], '%Y-%m-%d')
-            grades: list = [g for g in row[2:] if isinstance(g, (int, float))]
-            return {'name': name, 'date': date, 'grades': grades} #Give back a dict which we can use to easily access the values when appending them
-        # Error handling
-        except ValueError as e:
-            print(f"ValueError at row {row}. Please insert the correct datetime format.")
-            self.__error_log.append(["ValueError", row, str(e)])
-            return None
-        except IndexError as e:
-            print(f"IndexError at row {row}. Please insert the data at the correct slots.")
-            self.__error_log.append(["IndexError", row, str(e)])
-            return None
-        except Exception as e:
-            print(f"Unknown error at row {row}.\n Error code: {e}")
-            self.__error_log.append(["UNKNOWN", row, str(e)])
-            return None
-        
-        
-    
-    def create_main_report(self, title: str = "Main Report") -> Self:
-        """Create the main report sheet"""
-        self.__main_sheet = self.__workbook.create_sheet(title)
-        return self
-        
-        
+    def add_workbook(self, data: list[list], headers: list[str] | None = None) -> None: 
+        """
+        Parse 'data' with the helper func and write it to a "Main Report" sheet
 
-    def create_data_records(self) -> Self:
-        """Creates the main report with all the provided data from the previous functions"""
-        counter: int = 0 # Initialize a counter, this will store the amount of times the program has successfully appended a line
-        if self.__data is None: #In case user hasn't called add_data() and self.__data is empty
-            raise ValueError("No data found. Please call add_data() before processing.")
-        
-        if self.__main_sheet is None: #If user hasn't called create_main_report
-            raise AttributeError("Main report not initialized. Call create_main_report() first")
-        
-        if self.__headers: #If the user has provided headers
-            self.__main_sheet.append(self.__headers)
-        else: #If the user hasn't provided headers
-            if not self.__data:
-                raise ValueError("Data is empty.")
-            width = max(len(row) for row in self.__data)
-            self.__main_sheet.append(['Names', 'Dates'] + [f'Grade {i}' for i in range(1, width - 1)])
-        
-        for row in self.__data:
-            if not row or len(row) < 3: #If the row a) doesn't have anything or b) just has name and dates but not grades
-                continue
-            parsed = self._parse_row(row) #Call the helper func
-            if parsed: 
-                self.__main_sheet.append([parsed['name'], parsed['date'], *parsed['grades']]) #Using the dict the helper func returned
-                counter += 1 
-        
-        print(f"Stored {counter} students in the main sheet! Go check it out!")
-        return self
-      
+        Args:
+            data:    Each inner list must be [name, 'YYYY-MM-DD', grade, ...]
+            headers: Optional column headers. Auto-generated when not given
 
-    def create_summary_sheet(self, title: str = "Summary") -> Self:
-        """Initializes the summary sheet"""
-        self.__summary_sheet = self.__workbook.create_sheet(title)
-        return self
+        Raises:
+            MissingDataError: if 'data' is empty.
+            InvalidRowError:  Originates from func: '_parse_row()' for bad rows
+        """
+        sheet = self._workbook.create_sheet("Main Report")
+
+        if not data: 
+            raise MissingDataError("Data must be a non-empty list")
         
-    
-    def create_summary_report(self) -> Self:
-        """Process loaded data into the summary sheet, calculating each student's average grade and pass/fail status."""
+        if headers: 
+            sheet.append(headers)
+        else: 
+            width = max(len(row) for row in data)
+            sheet.append(["Names", "Dates"] + [f"Grade {i}" for i in range(1, width - 1)])
 
-        if self.__data is None: #In case __data isn't initialized
-            raise ValueError("No data found. Please call add_data() before processing.")
-        if self.__summary_sheet is None: #In case __summary_sheet isn't initialized
-            raise AttributeError("Summary sheet not initialized. Call create_summary_sheet() first")
-        
-        counter: int = 0 
-        self.__summary_sheet.append(['Names', 'Dates', 'Average Grades', 'Status']) # Headers. For the main report we put the headers as args at add_data()
-        
-        for row in self.__data: 
-            if not row or len(row) < 3:
-                continue
-            
-            parsed = self._parse_row(row) #Call helper func
-            if not parsed or not parsed['grades']: #It will skip this row if there are no grades
-                continue
-
-            average_grade = round(sum(parsed['grades']) / len(parsed['grades']), 1) #Finding the average grade
-
-            status: str = "PASS" if average_grade >= self.__pass_threshold else "FAIL"
-
-            self.__summary_sheet.append([parsed['name'], parsed['date'], average_grade, status])
-            
-            counter += 1
-        
-        print(f"Summarized {counter} students at {self.__summary_sheet.title}. Go check it out!")
-        return self
-    
-    def make_error_report(self, error_sheet_name: str = "Error Sheet") -> Self:
-        """Creates an error report. It logs every error that occurs in the program"""
-        if not self.__error_log: 
-            print("No errors found during processing. Skipping error sheet.")
-            return self
-
-        self.__error_sheet = self.__workbook.create_sheet(error_sheet_name)
-
-        self.__error_sheet.append(["Error Type", "Row", "Technical Details"])
-
-        for error_entry in self.__error_log: 
-            self.__error_sheet.append(error_entry)
-        
-        print(f"Error report generated with {len(self.__error_log)} entries.")
-
-        return self
+        count: int = 0
+        for row in data: 
+            parsed = _parse_row(row) #Raises InvalidRowError on bad input
+            sheet.append([parsed["name"], parsed['date'], *parsed['grades']])
+            count += 1
+            self._parsed_records.append(parsed) #So that we don't need to waste time and energy on parsing again
+        logger.info("Records sheet: Wrote %d rows.", count)
        
     
-    def save_file(self, title: str = "Student Report") -> Self:
-        """Save the file"""
-        if not title.endswith('.xlsx'):  #Checks if the provided title has a suffix or not. 
-            title += '.xlsx'
-        
-        try:
-            self.__workbook.save(title)
-            print(f"Successfully saved to {title}")
-        except PermissionError:
-            print(f"Error: Could not save {title}. Please close the file in Excel and try again.")
-        
-        return self
-        
+    def create_summary(self, fail_under: int = 70, file: str = "student_report.xlsx") -> None: 
+        """
+        Calculate each student's average, add a “Summary” sheet, and save the file.
 
-if __name__ == "__main__":
-    # Example, you can modify it :)
-    list_of_students = [
-        ['Jane', '2024-06-20', 40, 70, 100, 56],
-        ['Bob', '2026-06-20', 93, 56, 74, 89],
+        Args:
+            fail_under: Average below this value is marked "FAIL"
+            file:       Output file path (must end in .xlsx) which would be called from following private func
+
+        Raises:
+            MissingDataError: if func: 'add_workbook()' has not been called yet
+            InvalidRowError:  Originates from func: '_parse_row()' for bad rows
+            PermissionError:  if the file is open in another process
+        """
+        if not hasattr(self, "_parsed_records"): 
+            raise MissingDataError("Call add_workbook() before create_summary().")
+
+        sheet = self._workbook.create_sheet("Summary")
+        sheet.append(["Names", "Dates", "Average Grade", "Status"])
+
+        count: int = 0
+        for parsed in self._parsed_records: 
+            # 'parsed' is already a dict, so we jump straight to the math
+            average_grade = round(sum(parsed["grades"]) / len(parsed["grades"]), 1)
+            status: str = "PASS" if average_grade >= fail_under else "FAIL"
+            
+            sheet.append([parsed['name'], parsed['date'], average_grade, status])
+            count += 1
+        
+        logger.info("Summary sheet: summarised %d students.", count)
+        self._save(file)
+    
+    # --- Private Helper ---
+    def _save(self, file: str) -> None: 
+        if not file.endswith('.xlsx'): 
+            file += '.xlsx'
+        try:
+            self._workbook.save(file)
+            logger.info("Workbook saved to %s.", file)
+        except PermissionError: 
+            logger.critical("Couldn't save %s. Please close the file and try again", file)
+            raise
+
+if __name__ == "__main__": 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    
+    #example list of student names, you can change it if you want to try out the error handling :)
+    students = [
+        ["Jane", "2024-06-20", 40, 70, 100, 56],
+        ["Bob",  "2026-06-20", 93, 56,  74, 89]
     ]
 
-    # Calls the class and its methods, making a nicely formatted Excel workbook with multiple sheets
-    (ExcelReportBuilder(60)
-        .add_data(list_of_students)
-        .create_main_report()
-        .create_data_records()
-        .create_summary_sheet("Student Summary")
-        .create_summary_report()
-        .make_error_report("Error Log")
-        .save_file("student_summaries.xlsx"))
-
-"""
-Calling the methods from the class should follow one of two structures (or both): 
-1) add_data() -> create_main_report() -> create_data_records()
-2) add_data() -> create_summary_sheet() -> create_summary_report()
-Both followed by: make_error_report() (optional) -> save_file()
-"""
+    wb = ExcelReportBuilder() #Initiate the object
+    wb.add_workbook(students) #First func for "Report" sheet
+    wb.create_summary(fail_under=60, file="Student_Summaries.xlsx") #final function for "Summary" sheet
 
 
 
